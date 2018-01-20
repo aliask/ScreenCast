@@ -11,7 +11,7 @@ HINSTANCE hInst;								// current instance
 TCHAR szTitle[MAX_LOADSTRING];					// The title bar text
 TCHAR szWindowClass[MAX_LOADSTRING];			// the main window class name
 DWORD ipAddress = MAKEIPADDRESS(127, 0, 0, 1);
-int udpPort = 10234;
+int udpPort = 20304;
 int panelWidth = 32;
 int panelHeight = 16;
 int FPS = 10;
@@ -103,11 +103,17 @@ bool SendBMPFile(HBITMAP bitmap, HDC bitmapDC, int width, int height){
 		return false;
 	}
 
-	// Convert endianness of bitmap
-	// TODO: I don't think this is RGBA, maybe ARGB? Ugh...
+	// Convert byte order of pixel from BGRA to RGBA
+	unsigned char temp[4];
+	unsigned char* pixelOffset;
 	for (int i = 0; i < lpbi->bmiHeader.biSizeImage/4; i++)
 	{
-		*((u_long*)lpvBits+i) = htonl(*((u_long*)lpvBits+i));
+		pixelOffset = (unsigned char*)lpvBits + (4 * i);
+		temp[0] = *(pixelOffset + 2);
+		temp[1] = *(pixelOffset + 1);
+		temp[2] = *(pixelOffset + 0);
+		temp[3] = *(pixelOffset + 3);
+		*((u_long*)lpvBits + i) = *(u_long*)temp;
 	}
 
 	// Write bitmap bits to the file:
@@ -173,7 +179,6 @@ int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
 
- 	// TODO: Place code here.
 	MSG msg;
 	HACCEL hAccelTable;
 
