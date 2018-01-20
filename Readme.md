@@ -1,4 +1,4 @@
-#ScreenCast
+# ScreenCast
 A small utility to send raw screen data to a network connected display.
 
 ## Usage
