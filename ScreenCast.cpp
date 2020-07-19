@@ -10,7 +10,7 @@
 HINSTANCE hInst;								// current instance
 TCHAR szTitle[MAX_LOADSTRING];					// The title bar text
 TCHAR szWindowClass[MAX_LOADSTRING];			// the main window class name
-DWORD ipAddress = MAKEIPADDRESS(127, 0, 0, 1);
+DWORD ipAddress = MAKEIPADDRESS(192, 168, 0, 26);
 int udpPort = 20304;
 int panelWidth = 32;
 int panelHeight = 16;
@@ -69,6 +69,7 @@ bool SendBMPFile(HBITMAP bitmap, HDC bitmapDC, int width, int height){
 	// The bitmap is empty, so let's copy the contents of the surface to it.
 	// For that we need to select it into a device context. We create one.
 	if ((OffscrDC = CreateCompatibleDC(bitmapDC)) == NULL) {
+		DeleteObject(OffscrBmp);
 		logA("Couldn't create DC");
 		return false;
 	}
@@ -81,6 +82,8 @@ bool SendBMPFile(HBITMAP bitmap, HDC bitmapDC, int width, int height){
 	// Reserve memory for bitmap info (BITMAPINFOHEADER + largest possible
 	// palette):
 	if ((lpbi = (LPBITMAPINFO)(new char[sizeof(BITMAPINFOHEADER) + 256 * sizeof(RGBQUAD)])) == NULL) {
+		DeleteObject(OffscrBmp);
+		DeleteObject(OffscrDC);
 		logA("Couldn't allocate bitmapinfo");
 		return false;
 	}
@@ -89,16 +92,34 @@ bool SendBMPFile(HBITMAP bitmap, HDC bitmapDC, int width, int height){
 	// Get info but first de-select OffscrBmp because GetDIBits requires it:
 	SelectObject(OffscrDC, OldBmp);
 	if (!GetDIBits(OffscrDC, OffscrBmp, 0, height, NULL, lpbi, DIB_RGB_COLORS)) {
+		DeleteObject(OffscrBmp);
+		DeleteObject(OffscrDC);
+		delete[]lpbi;
 		logA("Couldn't get bitmap info");
+		return false;
+	}
+	// Abort if we don't have enough data to fill a frame
+	if (lpbi->bmiHeader.biSizeImage < 4 * height * width) {
+		DeleteObject(OffscrBmp);
+		DeleteObject(OffscrDC);
+		delete[]lpbi;
+		logA("Not enough data to make a frame");
 		return false;
 	}
 	// Reserve memory for bitmap bits:
 	if ((lpvBits = new char[lpbi->bmiHeader.biSizeImage]) == NULL) {
+		DeleteObject(OffscrBmp);
+		DeleteObject(OffscrDC);
+		delete[]lpbi;
 		logA("Couldn't allocate bitmap");
 		return false;
 	}
 	// Have GetDIBits convert OffscrBmp to a DIB (device-independent bitmap):
 	if (!GetDIBits(OffscrDC, OffscrBmp, 0, height, lpvBits, lpbi, DIB_RGB_COLORS)) {
+		DeleteObject(OffscrBmp);
+		DeleteObject(OffscrDC);
+		delete[]lpbi;
+		delete[]lpvBits;
 		logA("Couldn't get bitmap data");
 		return false;
 	}
@@ -116,14 +137,33 @@ bool SendBMPFile(HBITMAP bitmap, HDC bitmapDC, int width, int height){
 		*((u_long*)lpvBits + i) = *(u_long*)temp;
 	}
 
-	// Write bitmap bits to the file:
-	unsigned int written = sendUDP((char*)lpvBits, lpbi->bmiHeader.biSizeImage);
+	size_t headerSize = offsetof(struct Frame, data);
+	size_t dataSize = lpbi->bmiHeader.biSizeImage;
+	struct Frame *sendFrame = (struct Frame*)malloc(headerSize + dataSize);
+	sendFrame->ident = FRAME_IDENT;
+	sendFrame->height = height;
+	sendFrame->width = width;
+	sendFrame->length = dataSize;
+	memcpy_s(sendFrame->data, dataSize, (char*)lpvBits, dataSize);
+
+	// Write frame to the socket:
+	unsigned int written = sendUDP((char*)sendFrame, headerSize + dataSize);
 	if (written == SOCKET_ERROR) {
+		DeleteObject(OffscrBmp);
+		DeleteObject(OffscrDC);
+		delete[]lpbi;
+		delete[]lpvBits;
+		free(sendFrame);
 		logA("Couldn't send UDP packet: Socket error %d\n", WSAGetLastError());
 		return false;
 	}
 
 	if (written < lpbi->bmiHeader.biSizeImage) {
+		DeleteObject(OffscrBmp);
+		DeleteObject(OffscrDC);
+		delete[]lpbi;
+		delete[]lpvBits;
+		free(sendFrame);
 		logA("Couldn't send UDP packet: %d / %d bytes sent\n", written, lpbi->bmiHeader.biSizeImage);
 		return false;
 	}
@@ -133,6 +173,7 @@ bool SendBMPFile(HBITMAP bitmap, HDC bitmapDC, int width, int height){
 	DeleteObject(OffscrDC);
 	delete[]lpbi;
 	delete[]lpvBits;
+	free(sendFrame);
 
 	return true;
 }
@@ -150,6 +191,7 @@ bool ScreenCaptureUDP(int x, int y, int width, int height){
 
 	// copy from the screen to my bitmap
 	HDC hDcResized = GetDC(0);
+	SetStretchBltMode(hDc, HALFTONE);
 	StretchBlt(hDc, 0, 0, panelWidth, panelHeight, hDcResized, x, y, width, height, SRCCOPY);
 
 	// Send UDP STREAM
