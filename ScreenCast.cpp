@@ -15,6 +15,7 @@ int udpPort = 20304;
 int panelWidth = 32;
 int panelHeight = 16;
 int FPS = 10;
+UINT8 brightness = 30;
 bool running = false;
 SOCKET s = WSANOTINITIALISED;
 
@@ -51,6 +52,28 @@ int sendUDP(char* pkt, int size) {
 	delete destAddr;
 
 	return written;
+}
+
+bool SendBrightness(UINT8 brightness) {
+	struct Command sendCommand;
+	sendCommand.ident = COMMAND_IDENT;
+	sendCommand.command = cmdBrightness;
+	sendCommand.value = brightness;
+
+	// Write command to the socket:
+	unsigned int written = sendUDP((char*)&sendCommand, sizeof(sendCommand));
+	if (written == SOCKET_ERROR) {
+		logA("Couldn't send UDP packet: Socket error %d\n", WSAGetLastError());
+		return false;
+	}
+
+	if (written < sizeof(sendCommand)) {
+		logA("Couldn't send UDP packet: %d / %d bytes sent\n", written, sizeof(sendCommand));
+		return false;
+	}
+
+	return true;
+
 }
 
 bool SendBMPFile(HBITMAP bitmap, HDC bitmapDC, int width, int height){
@@ -212,6 +235,7 @@ BOOL				InitInstance(HINSTANCE, int);
 LRESULT CALLBACK	WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK	About(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK	Connect(HWND, UINT, WPARAM, LPARAM);
+INT_PTR CALLBACK	Brightness(HWND, UINT, WPARAM, LPARAM);
 
 int APIENTRY _tWinMain(_In_ HINSTANCE hInstance,
                      _In_opt_ HINSTANCE hPrevInstance,
@@ -360,6 +384,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		case IDM_CONNECT:
 			DialogBox(hInst, MAKEINTRESOURCE(IDD_CONNECT), hWnd, Connect);
 			break;
+		case IDM_BRIGHTNESS:
+			DialogBox(hInst, MAKEINTRESOURCE(IDD_BRIGHTNESS), hWnd, Brightness);
+			break;
 		default:
 			return DefWindowProc(hWnd, message, wParam, lParam);
 		}
@@ -370,21 +397,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		EndPaint(hWnd, &ps);
 		break;
 	case WM_TIMER:
-		if (!running)
-			break;
 
-		RECT rect;
-		GetClientRect(hWnd, &rect);
-		ClientToScreen(hWnd, reinterpret_cast<POINT*>(&rect.left)); // convert top-left
-		ClientToScreen(hWnd, reinterpret_cast<POINT*>(&rect.right)); // convert bottom-right
+		if (wParam == IDT_SENDCOMMAND) {
+			SendBrightness(brightness);
+			running = true;
+			KillTimer(hWnd, IDT_SENDCOMMAND);
+		} else if (wParam == IDT_SENDFRAME) {
+			if (!running)
+				break;
 
-		if (!ScreenCaptureUDP(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top))
-		{
-			// On error, stop the stream
-			SetWindowText(hWnd, L"ScreenCast");
-			running = false;
-			MessageBox(hWnd, L"Error sending screen!", L"Error", MB_OK | MB_ICONEXCLAMATION);
+			RECT rect;
+			GetClientRect(hWnd, &rect);
+			ClientToScreen(hWnd, reinterpret_cast<POINT*>(&rect.left)); // convert top-left
+			ClientToScreen(hWnd, reinterpret_cast<POINT*>(&rect.right)); // convert bottom-right
+
+			if (!ScreenCaptureUDP(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top))
+			{
+				// On error, stop the stream
+				SetWindowText(hWnd, L"ScreenCast");
+				running = false;
+				MessageBox(hWnd, L"Error sending screen!", L"Error", MB_OK | MB_ICONEXCLAMATION);
+			}
 		}
+
 		break;
 	case WM_DESTROY:
 		PostQuitMessage(0);
@@ -430,7 +465,7 @@ INT_PTR CALLBACK Connect(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 				return MessageBox(hDlg, L"FPS value invalid, please specify between 1 and 100 FPS", L"Error connecting", MB_ICONEXCLAMATION);
 
 			running = true;
-			SetTimer(GetParent(hDlg), 0, 1 / FPS, NULL); // Set timer on the main thread
+			SetTimer(GetParent(hDlg), IDT_SENDFRAME, (1000 / FPS), (TIMERPROC)NULL);
 			SetWindowText(GetParent(hDlg), L"ScreenCast (Casting)");
 
 		}
@@ -457,6 +492,48 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
 
 	case WM_COMMAND:
 		if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)
+		{
+			EndDialog(hDlg, LOWORD(wParam));
+			return (INT_PTR)TRUE;
+		}
+		break;
+	}
+	return (INT_PTR)FALSE;
+}
+
+
+// Message handler for brightness box.
+INT_PTR CALLBACK Brightness(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	char brightness_str[4];
+	HWND sliderCon = GetDlgItem(hDlg, IDC_BRIGHTNESS_SLD);
+
+	UNREFERENCED_PARAMETER(lParam);
+	switch (message)
+	{
+	case WM_INITDIALOG:
+		snprintf(brightness_str, sizeof(brightness_str), "%d", brightness);
+		SetDlgItemTextA(hDlg, IDC_BRIGHTNESS_TXT, brightness_str);
+
+		SendMessage(sliderCon, TBM_SETRANGE, (WPARAM)1, (LPARAM)MAKELONG(0, 100));
+		SendMessage(sliderCon, TBM_SETPOS, (WPARAM)1, brightness);
+		return (INT_PTR)TRUE;
+
+	case WM_HSCROLL:
+		brightness = SendMessage(sliderCon, TBM_GETPOS, 0, 0);
+		snprintf(brightness_str, sizeof(brightness_str), "%d", brightness);
+		SetDlgItemTextA(hDlg, IDC_BRIGHTNESS_TXT, brightness_str);
+		return (INT_PTR)TRUE;
+
+	case WM_COMMAND:
+		if (LOWORD(wParam) == IDOK)
+		{
+			running = false;
+			SetTimer(GetParent(hDlg), IDT_SENDCOMMAND, COMMAND_DELAY, (TIMERPROC)NULL);
+			EndDialog(hDlg, LOWORD(wParam));
+			return (INT_PTR)TRUE;
+		}
+		else if(LOWORD(wParam) == IDCANCEL)
 		{
 			EndDialog(hDlg, LOWORD(wParam));
 			return (INT_PTR)TRUE;
