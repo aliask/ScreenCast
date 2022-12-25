@@ -26,5 +26,6 @@ typedef struct Command {
 
 enum Commands
 {
-	cmdBrightness
+	cmdBrightness = 0,
+	cmdPriority = 1
 };
